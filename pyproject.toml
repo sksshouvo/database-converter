@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "database-converter"
+version = "1.0.0"
+description = "Universal Database Converter CLI — migrate between MySQL, MSSQL, and PostgreSQL"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Salman Kabir" }]
+dependencies = [
+    "SQLAlchemy>=2.0.0",
+    "pymysql>=1.1.0",
+    "psycopg2-binary>=2.9.9",
+    "pyodbc>=5.0.0",
+    "click>=8.1.7",
+    "rich>=13.7.0",
+    "python-crontab>=3.0.0",
+    "schedule>=1.2.1",
+    "python-dotenv>=1.0.0",
+]
+
+[project.scripts]
+db-converter = "cli.main:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["cli*", "core*", "models*", "services*", "storage*", "utils*"]

@@ -1,0 +1,16 @@
+# Database drivers
+SQLAlchemy>=2.0.0
+pymysql>=1.1.0
+psycopg2-binary>=2.9.9
+pyodbc>=5.0.0
+
+# CLI & display
+click>=8.1.7
+rich>=13.7.0
+
+# Scheduling
+python-crontab>=3.0.0
+schedule>=1.2.1
+
+# Utilities
+python-dotenv>=1.0.0
