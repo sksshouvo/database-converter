@@ -30,13 +30,13 @@ def _print_header() -> None:
     )
 
 
-def _prompt_db_config(label: str) -> DatabaseConfig:
+def _prompt_db_config(label: str, require_database: bool = False) -> DatabaseConfig:
     """Interactively prompt for database connection details."""
     console.rule(f"[bold]{label} Database[/bold]")
     from core.connectors.connector_factory import ConnectorFactory
     engines = ConnectorFactory.supported_engines()
     engine = Prompt.ask(
-        f"Engine",
+        "Engine",
         choices=engines,
         default="mysql",
     )
@@ -45,14 +45,24 @@ def _prompt_db_config(label: str) -> DatabaseConfig:
     port = IntPrompt.ask("Port", default=port_defaults.get(engine, 5432))
     username = Prompt.ask("Username")
     password = Prompt.ask("Password", password=True)
-    database = Prompt.ask("Database name (leave blank for discovery)", default="")
+
+    if require_database:
+        # Keep asking until a non-blank name is given
+        database = ""
+        while not database.strip():
+            database = Prompt.ask("Database name [bold](required)[/bold]")
+            if not database.strip():
+                console.print("[red]Database name cannot be blank for the destination.[/red]")
+    else:
+        database = Prompt.ask("Database name (leave blank to list all databases)", default="")
+
     return DatabaseConfig(
         engine=engine,
         host=host,
         port=port,
         username=username,
         password=password,
-        database=database or None,
+        database=database.strip() or None,
     )
 
 
@@ -93,8 +103,8 @@ def _show_jobs_table(jobs: list) -> None:
 def screen_create_migration() -> None:
     """Wizard for a new migration job."""
     console.rule("[bold green]Create New Migration[/bold green]")
-    src_cfg = _prompt_db_config("Source")
-    dst_cfg = _prompt_db_config("Destination")
+    src_cfg = _prompt_db_config("Source", require_database=False)
+    dst_cfg = _prompt_db_config("Destination", require_database=True)
 
     from core.validators.connection_validator import validate_connection
     with console.status("Testing connections…"):
@@ -113,8 +123,13 @@ def screen_create_migration() -> None:
     workers = IntPrompt.ask("Max parallel workers", default=4)
     batch = IntPrompt.ask("Batch size (rows)", default=1000)
     run_val = Confirm.ask("Run post-migration validation?", default=True)
+    drop_existing = Confirm.ask(
+        "[yellow]Drop existing destination tables before migrating?[/yellow] "
+        "[dim](safe clean slate; irreversible)[/dim]",
+        default=False,
+    )
 
-    dst_cfg.database = dst_cfg.database or src_cfg.database
+    # dst_cfg.database is guaranteed non-None because require_database=True above
 
     migration_cfg = MigrationConfig(
         source=src_cfg,
@@ -123,6 +138,7 @@ def screen_create_migration() -> None:
         max_workers=workers,
         batch_size=batch,
         run_validation=run_val,
+        drop_existing=drop_existing,
     )
 
     if not Confirm.ask("\n[bold]Start migration now?[/bold]", default=True):

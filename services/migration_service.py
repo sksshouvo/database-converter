@@ -20,6 +20,15 @@ from utils.logger import get_logger
 logger = get_logger(__name__)
 
 
+def _tbl_ref_for_drop(dialect: str, table: str, database: str) -> str:
+    """Return a fully-qualified table reference for a DROP TABLE statement."""
+    if dialect == "mysql":
+        return f"`{database}`.`{table}`"
+    if dialect == "mssql":
+        return f"[{database}].[dbo].[{table}]"
+    return f'"{table}"'
+
+
 @dataclass
 class MigrationConfig:
     source: DatabaseConfig
@@ -28,6 +37,7 @@ class MigrationConfig:
     max_workers: int = 4
     batch_size: int = 1000
     run_validation: bool = True
+    drop_existing: bool = False      # If True, DROP existing destination tables first
     job_id_prefix: str | None = None
 
 
@@ -90,40 +100,67 @@ class MigrationService:
         ordered_tables = resolver.resolve(schemas)
         logger.info(f"Table migration order: {ordered_tables}")
 
-        # ── 6. Apply schema on destination ────────────────────────────
+        # ── 6a. Drop existing destination tables (if requested) ──────
+        if cfg.drop_existing:
+            logger.info("Dropping existing destination tables …")
+            # Disable FK checks so we can drop in any order
+            dst_dialect = dst_conn.connect().dialect.name
+            fk_disable = {
+                "mysql": ("SET FOREIGN_KEY_CHECKS = 0;", "SET FOREIGN_KEY_CHECKS = 1;"),
+                "mssql": ("", ""),      # handled per-table with NOCHECK
+                "postgresql": ("SET CONSTRAINTS ALL DEFERRED;", ""),
+            }.get(dst_dialect, ("", ""))
+
+            # Drop in reverse dependency order (leaves first)
+            tables_to_drop = list(reversed(ordered_tables))
+            for table_name in tables_to_drop:
+                tbl = _tbl_ref_for_drop(dst_dialect, table_name, dst_db)
+                try:
+                    with dst_engine.begin() as conn:
+                        if fk_disable[0]:
+                            conn.execute(text(fk_disable[0]))
+                        conn.execute(text(f"DROP TABLE IF EXISTS {tbl};"))
+                        if fk_disable[1]:
+                            conn.execute(text(fk_disable[1]))
+                    logger.info(f"Dropped: {table_name}")
+                except Exception as exc:
+                    logger.warning(f"Could not drop '{table_name}': {exc}")
+
+        # ── 6b. Apply schema on destination ──────────────────────────
         builder = SchemaBuilder(cfg.source.engine, cfg.destination.engine)
         schema_map = {s.table_name: s for s in schemas}
         dst_engine = dst_conn.connect()
 
-        with dst_engine.begin() as conn:
-            for table_name in ordered_tables:
-                schema = schema_map[table_name]
-                ddl = builder.build_create_table(schema)
-                logger.info(f"Creating table: {table_name}")
-                try:
+        # Separate transaction per table so one failure doesn't block others
+        for table_name in ordered_tables:
+            schema = schema_map[table_name]
+            ddl = builder.build_create_table(schema, dest_database=dst_db)
+            logger.info(f"Creating table: {table_name}")
+            try:
+                with dst_engine.begin() as conn:
                     conn.execute(text(ddl))
-                except Exception as exc:
-                    logger.warning(f"Table '{table_name}' DDL error (may already exist): {exc}")
+            except Exception as exc:
+                logger.warning(f"Table '{table_name}' DDL error (may already exist): {exc}")
 
         # Apply indexes after all tables created
-        with dst_engine.begin() as conn:
-            for table_name in ordered_tables:
-                schema = schema_map[table_name]
-                for idx_ddl in builder.build_indexes(schema):
-                    try:
+        for table_name in ordered_tables:
+            schema = schema_map[table_name]
+            for idx_ddl in builder.build_indexes(schema, dest_database=dst_db):
+                try:
+                    with dst_engine.begin() as conn:
                         conn.execute(text(idx_ddl))
-                    except Exception as exc:
-                        logger.warning(f"Index DDL warning for '{table_name}': {exc}")
+                except Exception as exc:
+                    logger.warning(f"Index DDL warning for '{table_name}': {exc}")
 
         # Apply FK constraints last
-        with dst_engine.begin() as conn:
-            for table_name in ordered_tables:
-                schema = schema_map[table_name]
-                for fk_ddl in builder.build_foreign_keys(schema):
-                    try:
+        for table_name in ordered_tables:
+            schema = schema_map[table_name]
+            for fk_ddl in builder.build_foreign_keys(schema, dest_database=dst_db):
+                try:
+                    with dst_engine.begin() as conn:
                         conn.execute(text(fk_ddl))
-                    except Exception as exc:
-                        logger.warning(f"FK DDL warning for '{table_name}': {exc}")
+                except Exception as exc:
+                    logger.warning(f"FK DDL warning for '{table_name}': {exc}")
 
         logger.info("✅ Destination schema applied.")
 
